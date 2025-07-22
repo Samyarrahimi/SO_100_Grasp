@@ -39,7 +39,7 @@ INITIAL_CUBE_POS = (0.2, 0.0, 1.065)
 INITIAL_CUBE_ROT = (1.0, 0.0, 0.0, 0.0)
 RANDOMIZATION_RANGE_CUBE_X = 0.05
 RANDOMIZATION_RANGE_CUBE_Y = 0.2
-RANDOMIZATION_RANGE_CUBE_Z = 0.001
+RANDOMIZATION_RANGE_CUBE_Z = 0.0
 
 
 @configclass
@@ -49,7 +49,7 @@ class So100GraspEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0
     # - spaces definition
     action_space = 6
-    action_scale_robot = 0.5
+    action_scale_robot = 0.0
     state_space = 0
     observation_space = spaces.Dict({
         "camera": spaces.Box(low=0.0, high=1.0, shape=(CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.float32),
@@ -121,9 +121,16 @@ class So100GraspEnvCfg(DirectRLEnvCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=TABLE_POS, rot=TABLE_ROT),
         spawn=UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd"),
     )
-    frame_marker_cfg = FRAME_MARKER_CFG.copy()
-    frame_marker_cfg.prim_path = "/Visuals/ee_goal"
-    frame_marker_cfg.scale = (0.1, 0.1, 0.1)
+    # Configure end-effector marker
+    goal_marker_cfg = copy.deepcopy(FRAME_MARKER_CFG)
+    # Properly replace the frame marker configuration
+    goal_marker_cfg.markers = {
+        "frame": sim_utils.UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd",
+            scale=(0.03, 0.03, 0.03),
+        )
+    }
+    goal_marker_cfg.prim_path = "/Visuals/ee_goal"
 
 
     # Configure end-effector marker

@@ -45,11 +45,13 @@ class So100GraspEnv(DirectRLEnv):
 
         indices, body_names = self.robot.find_bodies(self.robot.body_names, preserve_order=True)     
         self.body_ids = indices[body_names.index("Moving_Jaw")]
+        print("body_ids: ", self.body_ids)
         # Obtain the frame index of the end-effector
         # For a fixed base robot, the frame index is one less than the body index. This is because
         # the root body is not included in the returned Jacobians.
         self.ee_jacobi_idx = indices[self.body_ids] - 1
-
+        print("ee_jacobi_idx: ", self.ee_jacobi_idx)
+        
         self.ik_commands = torch.zeros(self.scene.num_envs, self.diff_ik_controller.action_dim, device=self.robot.device)
         self.ik_commands[:, :3] = torch.tensor(self.cfg.initial_cube_pos, device=self.device)
         self.ik_commands[:, 3:7] = torch.tensor(self.cfg.initial_cube_rot, device=self.device)
@@ -63,6 +65,7 @@ class So100GraspEnv(DirectRLEnv):
         self.object = RigidObject(self.cfg.object_cfg)
         self.cube_marker = FrameTransformer(self.cfg.cube_marker_cfg)
         self.camera = Camera(self.cfg.camera_cfg)
+        self.goal_marker = VisualizationMarkers(self.cfg.goal_marker_cfg)
         table_cfg = self.cfg.table_cfg
         table_cfg.spawn.func(
             table_cfg.prim_path, table_cfg.spawn,
@@ -70,7 +73,6 @@ class So100GraspEnv(DirectRLEnv):
             orientation=table_cfg.init_state.rot
         )
         
-        self.goal_marker = VisualizationMarkers(self.cfg.frame_marker_cfg)
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         self.scene.articulations["robot"] = self.robot
         self.scene.rigid_objects["object"] = self.object
@@ -92,6 +94,7 @@ class So100GraspEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         # apply arm actions
+        self.actions = torch.zeros((self.num_envs, self.cfg.action_space), device=self.device)
         self.robot.set_joint_position_target(self.actions[:, :5], joint_ids=self.dof_idx[:5])
         # apply gripper actions
         self.robot.set_joint_position_target(self.actions[:, 5:6], joint_ids=self.dof_idx[5:6])
@@ -178,6 +181,15 @@ class So100GraspEnv(DirectRLEnv):
         self.object.data.root_vel_w[env_ids] = object_vel
         default_root_state[:, :3] = object_pos
         self.object.write_root_state_to_sim(default_root_state, env_ids)
+
+        # visualize the goal marker
+        # new_goal_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        # new_goal_pos[:, 2] = 1.065
+        # new_goal_pos += env_origins
+        # print(f"new_goal_pos in reset_idx: {new_goal_pos}")
+        print(f"object_pos in reset_idx: {object_pos}")
+        self.goal_marker.visualize(object_pos)
+        print("object pos in reset_idx: ", object_pos)
 
         # position inja mitavand taghir konad, alan daqiqn ba cube yeki mishe
         self.ik_commands[:] = default_root_state[:, :7]
