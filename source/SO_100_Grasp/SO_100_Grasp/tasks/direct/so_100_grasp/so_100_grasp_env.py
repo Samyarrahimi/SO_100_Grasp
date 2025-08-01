@@ -23,8 +23,18 @@ from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
+from isaacsim.core.utils.extensions import enable_extension
+enable_extension("isaacsim.robot_motion.motion_generation")
+
+from isaacsim.robot_motion.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver, interface_config_loader
+from isaacsim.core.prims import SingleArticulation
+
 
 from .so_100_grasp_env_cfg import So100GraspEnvCfg
+
+_THIS_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROBOT_DESCRIPTOR_PATH = os.path.join(_THIS_SCRIPT_DIR, "asset", "SO_5DOF_ARM100_WITH_CAMERA_Descriptor.yaml")
+ROBOT_URDF_PATH = os.path.join(_THIS_SCRIPT_DIR, "asset", "urdf", "SO_5DOF_ARM100_8j_URDF.SLDASM", "urdf", "SO_5DOF_ARM100_8j_URDF.SLDASM.urdf")
 
 
 class So100GraspEnv(DirectRLEnv):
@@ -32,6 +42,21 @@ class So100GraspEnv(DirectRLEnv):
 
     def __init__(self, cfg: So100GraspEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+
+        self.kine_solver = LulaKinematicsSolver(
+            robot_description_path=ROBOT_DESCRIPTOR_PATH,
+            urdf_path=ROBOT_URDF_PATH,
+        )
+        print(self.kine_solver.get_all_frame_names())
+
+        robot_single_art = SingleArticulation(prim_path="/World/envs/env_.*/Robot")
+        robot_single_art.initialize()
+
+        end_effector_frame = "Moving_Jaw"
+        self.art_solver = ArticulationKinematicsSolver(
+            robot_single_art, self.kine_solver, end_effector_frame
+        )
+
         # Get joint indices for action mapping
         self.dof_idx, _ = self.robot.find_joints(self.cfg.dof_names)
         self.last_actions = torch.zeros((self.num_envs, self.cfg.action_space), device=self.device)
@@ -182,34 +207,21 @@ class So100GraspEnv(DirectRLEnv):
         default_root_state[:, :3] = object_pos
         self.object.write_root_state_to_sim(default_root_state, env_ids)
 
-        # visualize the goal marker
-        # new_goal_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        # new_goal_pos[:, 2] = 1.065
-        # new_goal_pos += env_origins
-        # print(f"new_goal_pos in reset_idx: {new_goal_pos}")
-        print(f"object_pos in reset_idx: {object_pos}")
         self.goal_marker.visualize(object_pos)
-        print("object pos in reset_idx: ", object_pos)
 
-        # position inja mitavand taghir konad, alan daqiqn ba cube yeki mishe
-        self.ik_commands[:] = default_root_state[:, :7]
+        target_pos = object_pos.clone()
+        target_quat = object_quat.clone()
         
-        self.diff_ik_controller.reset(env_ids)
-        self.diff_ik_controller.set_command(self.ik_commands)
-        jacobian = self.robot.root_physx_view.get_jacobians()[:, self.ee_jacobi_idx, :, self.dof_idx]
-        ee_pose_w = self.robot.data.body_pose_w[:, self.body_ids]
-        root_pose_w = self.robot.data.root_pose_w
-        joint_pos = self.robot.data.joint_pos[:, self.dof_idx]
-        # compute frame in root frame
-        ee_pos_b, ee_quat_b = subtract_frame_transforms(
-            root_pose_w[:, 0:3], root_pose_w[:, 3:7], ee_pose_w[:, 0:3], ee_pose_w[:, 3:7]
-        )
-        # compute the joint commands
-        joint_pos_des = self.diff_ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
-        self.robot.write_joint_position_to_sim(joint_pos_des, joint_ids=self.dof_idx)
+        actions, success = self.art_solver.compute_inverse_kinematics(target_pos, target_quat)
+        if not success.all():
+            failed = env_ids[~success]
+            print(f"[WARNING] IK failed for reset env_ids: {failed}")
+
+        self.robot.articulation.apply_action(actions)
         self.robot.write_data_to_sim()
 
         self.last_actions[env_ids] = 0
+        print("now the robot is reset")
 
     def _joint_pos_rel(self) -> torch.Tensor:
         """Get joint positions relative to initial positions."""
