@@ -12,7 +12,8 @@ import os
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets import Articulation as LabArticulation
+from isaaclab.assets import RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import Camera, FrameTransformer
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
@@ -27,7 +28,7 @@ from isaacsim.core.utils.extensions import enable_extension
 enable_extension("isaacsim.robot_motion.motion_generation")
 
 from isaacsim.robot_motion.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver, interface_config_loader
-from isaacsim.core.prims import SingleArticulation
+from isaacsim.core.prims import SingleArticulation as SimSingleArticulation
 
 
 from .so_100_grasp_env_cfg import So100GraspEnvCfg
@@ -43,25 +44,17 @@ class So100GraspEnv(DirectRLEnv):
     def __init__(self, cfg: So100GraspEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self.kine_solver = LulaKinematicsSolver(
+        self.kinematics_solver = LulaKinematicsSolver(
             robot_description_path=ROBOT_DESCRIPTOR_PATH,
             urdf_path=ROBOT_URDF_PATH,
         )
-        print(self.kine_solver.get_all_frame_names())
+        print(f"kinematics solver all frame names: {self.kinematics_solver.get_all_frame_names()}")
 
-        robot_single_art = SingleArticulation(prim_path="/World/envs/env_.*/Robot")
-        robot_single_art.initialize()
-
-        end_effector_frame = "Moving_Jaw"
-        self.art_solver = ArticulationKinematicsSolver(
-            robot_single_art, self.kine_solver, end_effector_frame
-        )
 
         # Get joint indices for action mapping
         self.dof_idx, _ = self.robot.find_joints(self.cfg.dof_names)
         self.last_actions = torch.zeros((self.num_envs, self.cfg.action_space), device=self.device)
 
-        
         self.action_scale_robot = self.cfg.action_scale_robot
 
         # Create controller
@@ -81,11 +74,9 @@ class So100GraspEnv(DirectRLEnv):
         self.ik_commands[:, :3] = torch.tensor(self.cfg.initial_cube_pos, device=self.device)
         self.ik_commands[:, 3:7] = torch.tensor(self.cfg.initial_cube_rot, device=self.device)
 
-
-
     def _setup_scene(self):
         """Set up the simulation scene."""
-        self.robot = Articulation(self.cfg.robot_cfg)
+        self.robot = LabArticulation(self.cfg.robot_cfg)
         self.ee_frame = FrameTransformer(self.cfg.ee_frame_cfg)
         self.object = RigidObject(self.cfg.object_cfg)
         self.cube_marker = FrameTransformer(self.cfg.cube_marker_cfg)
@@ -209,16 +200,39 @@ class So100GraspEnv(DirectRLEnv):
 
         self.goal_marker.visualize(object_pos)
 
-        target_pos = object_pos.clone()
-        target_quat = object_quat.clone()
-        
-        actions, success = self.art_solver.compute_inverse_kinematics(target_pos, target_quat)
-        if not success.all():
-            failed = env_ids[~success]
-            print(f"[WARNING] IK failed for reset env_ids: {failed}")
+        target_pos = object_pos.clone().detach().cpu().numpy()
+        target_quat = object_quat.clone().detach().cpu().numpy()
 
-        self.robot.articulation.apply_action(actions)
-        self.robot.write_data_to_sim()
+        for i in range(len(env_ids)):
+            prim_path = f"/World/envs/env_{i}/Robot"
+            robot_sim_articulation = SimSingleArticulation(prim_path=prim_path)
+            #self.robot_sim_articulation.initialize()
+
+            end_effector_frame = "Fixed_Gripper"
+            articulation_kinematics_solver = ArticulationKinematicsSolver(
+                robot_sim_articulation, self.kinematics_solver, end_effector_frame
+            )
+
+            robot_sim_articulation.initialize()
+            robot_base_translation,robot_base_orientation = robot_sim_articulation.get_world_pose()
+            print(f"robot_base_translation: {robot_base_translation.shape}")
+            print(f"robot_base_orientation: {robot_base_orientation.shape}")
+            print(f"target_pos: {target_pos.shape}")
+            print(f"target_quat: {target_quat.shape}")
+            robot_base_translation = robot_base_translation.clone().detach().cpu().numpy()
+            robot_base_orientation = robot_base_orientation.clone().detach().cpu().numpy()
+            self.kinematics_solver.set_robot_base_pose(robot_base_translation,robot_base_orientation)
+            
+            actions, success = articulation_kinematics_solver.compute_inverse_kinematics(target_pos[i], target_quat[i])
+            print(f"actions: {actions}")
+            print(f"success: {success}")
+            if not success:
+                print(f"[WARNING] IK failed for reset env_ids: {i}")
+                continue
+
+            self.robot_sim_articulation.apply_action(actions)
+            self.robot.set_joint_position_target(actions[i, :5], joint_ids=self.dof_idx[:5], env_ids=[i])
+            self.robot.write_data_to_sim()
 
         self.last_actions[env_ids] = 0
         print("now the robot is reset")

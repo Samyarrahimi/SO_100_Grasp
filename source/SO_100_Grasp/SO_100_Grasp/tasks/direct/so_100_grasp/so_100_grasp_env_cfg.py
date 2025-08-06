@@ -79,9 +79,8 @@ class So100GraspEnvCfg(DirectRLEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=32, env_spacing=2.5, replicate_physics=True)
 
-    # Joint names for action mapping
-    # JOINT NAMES:  ['Shoulder_Rotation', 'Shoulder_Pitch', 'Elbow', 'Wrist_Pitch', 'Wrist_Roll', 'Gripper']
-    # BODY NAMES:  ['Base', 'Shoulder_Rotation_Pitch', 'Upper_Arm', 'Lower_Arm', 'Wrist_Pitch_Roll', 'Fixed_Gripper', 'Moving_Jaw']
+    # links = ["Base", "Shoulder_Rotation_Pitch", "Upper_Arm", "Lower_Arm", "Wrist_Pitch_Roll", "Fixed_Gripper", "Moving_Jaw"]
+    # joint names:
     dof_names = ["Shoulder_Rotation", "Shoulder_Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Gripper"]
     
     # Object configuration
