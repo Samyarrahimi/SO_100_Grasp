@@ -57,22 +57,22 @@ class So100GraspEnv(DirectRLEnv):
 
         self.action_scale_robot = self.cfg.action_scale_robot
 
-        # Create controller
-        diff_ik_cfg = DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls")
-        self.diff_ik_controller = DifferentialIKController(diff_ik_cfg, num_envs=self.scene.num_envs, device=self.device)
+        # # Create controller
+        # diff_ik_cfg = DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls")
+        # self.diff_ik_controller = DifferentialIKController(diff_ik_cfg, num_envs=self.scene.num_envs, device=self.device)
 
-        indices, body_names = self.robot.find_bodies(self.robot.body_names, preserve_order=True)     
-        self.body_ids = indices[body_names.index("Moving_Jaw")]
-        print("body_ids: ", self.body_ids)
-        # Obtain the frame index of the end-effector
-        # For a fixed base robot, the frame index is one less than the body index. This is because
-        # the root body is not included in the returned Jacobians.
-        self.ee_jacobi_idx = indices[self.body_ids] - 1
-        print("ee_jacobi_idx: ", self.ee_jacobi_idx)
+        # indices, body_names = self.robot.find_bodies(self.robot.body_names, preserve_order=True)     
+        # self.body_ids = indices[body_names.index("Moving_Jaw")]
+        # print("body_ids: ", self.body_ids)
+        # # Obtain the frame index of the end-effector
+        # # For a fixed base robot, the frame index is one less than the body index. This is because
+        # # the root body is not included in the returned Jacobians.
+        # self.ee_jacobi_idx = indices[self.body_ids] - 1
+        # print("ee_jacobi_idx: ", self.ee_jacobi_idx)
         
-        self.ik_commands = torch.zeros(self.scene.num_envs, self.diff_ik_controller.action_dim, device=self.robot.device)
-        self.ik_commands[:, :3] = torch.tensor(self.cfg.initial_cube_pos, device=self.device)
-        self.ik_commands[:, 3:7] = torch.tensor(self.cfg.initial_cube_rot, device=self.device)
+        # self.ik_commands = torch.zeros(self.scene.num_envs, self.diff_ik_controller.action_dim, device=self.robot.device)
+        # self.ik_commands[:, :3] = torch.tensor(self.cfg.initial_cube_pos, device=self.device)
+        # self.ik_commands[:, 3:7] = torch.tensor(self.cfg.initial_cube_rot, device=self.device)
 
     def _setup_scene(self):
         """Set up the simulation scene."""
@@ -203,36 +203,72 @@ class So100GraspEnv(DirectRLEnv):
         target_pos = object_pos.clone().detach().cpu().numpy()
         target_quat = object_quat.clone().detach().cpu().numpy()
 
-        for i in range(len(env_ids)):
-            prim_path = f"/World/envs/env_{i}/Robot"
-            robot_sim_articulation = SimSingleArticulation(prim_path=prim_path)
-            #self.robot_sim_articulation.initialize()
+        for env_id in env_ids:
+            prim_path = f"/World/envs/env_{env_id}/Robot"
 
-            end_effector_frame = "Fixed_Gripper"
-            articulation_kinematics_solver = ArticulationKinematicsSolver(
-                robot_sim_articulation, self.kinematics_solver, end_effector_frame
+            # 1) Sim articulation per env
+            sim_art = SimSingleArticulation(prim_path=prim_path)
+            sim_art.initialize()
+
+            # 2) Build per-env ArticulationKinematicsSolver AFTER init
+            end_effector_frame = "Fixed_Gripper"  # <- ensure this exists in solver.get_all_frame_names()
+            #art_ik = ArticulationKinematicsSolver(sim_art, self.kinematics_solver, end_effector_frame)
+
+            # 3) Update base pose for this env
+            base_t, base_q = sim_art.get_world_pose()
+            self.kinematics_solver.set_robot_base_pose(
+                base_t.clone().detach().cpu().numpy(),
+                base_q.clone().detach().cpu().numpy()
             )
 
-            robot_sim_articulation.initialize()
-            robot_base_translation,robot_base_orientation = robot_sim_articulation.get_world_pose()
-            print(f"robot_base_translation: {robot_base_translation.shape}")
-            print(f"robot_base_orientation: {robot_base_orientation.shape}")
-            print(f"target_pos: {target_pos.shape}")
-            print(f"target_quat: {target_quat.shape}")
-            robot_base_translation = robot_base_translation.clone().detach().cpu().numpy()
-            robot_base_orientation = robot_base_orientation.clone().detach().cpu().numpy()
-            self.kinematics_solver.set_robot_base_pose(robot_base_translation,robot_base_orientation)
-            
-            actions, success = articulation_kinematics_solver.compute_inverse_kinematics(target_pos[i], target_quat[i])
-            print(f"actions: {actions}")
-            print(f"success: {success}")
+            # 4) Use current arm joints as a single-row seed (5 DoF arm)
+            # current 5-DoF arm joints as seed (no gripper)
+            # q_seed = self.robot.data.joint_pos[env_id, self.dof_idx[:5]].detach().cpu().numpy()
+            # q_seed = q_seed.astype(np.float64).reshape(-1, 1)     # (5, 1) float64 column
+            # self.kinematics_solver.set_default_cspace_seeds(q_seed)  # shape (1,5)
+            q_seed = (
+                self.robot.data.joint_pos[env_id, self.dof_idx[:5]]  # tensor shape (5,)
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float64)
+                .reshape(-1, 1)  # shape (5, 1) as required
+            )
+            print(f"q_seed shape: {q_seed.shape}, dtype: {q_seed.dtype}")
+
+            # Register this seed with the solver; must be a list of np.ndarray
+            self.kinematics_solver.set_default_cspace_seeds([q_seed])
+
+            # robot_base_translation, robot_base_orientation = sim_art.get_world_pose()
+            # robot_base_translation = robot_base_translation.clone().detach().cpu().numpy()
+            # robot_base_orientation = robot_base_orientation.clone().detach().cpu().numpy()
+
+            #self.kinematics_solver.set_robot_base_pose(robot_base_translation,robot_base_orientation)
+
+            # 5) Target pose for THIS env (world frame)
+            pos_w  = np.asarray(target_pos[env_id],  dtype=np.float64).reshape(3)
+            quat_w = np.asarray(target_quat[env_id], dtype=np.float64).reshape(4)
+
+            # 6) Solve IK and apply
+            q_sol, success = self.kinematics_solver.compute_inverse_kinematics(
+                frame_name=end_effector_frame, 
+                target_position=pos_w, 
+                target_orientation=quat_w,
+                warm_start=q_seed,
+                position_tolerance=10,      # relax tolerances if needed
+                orientation_tolerance=0.9
+            )
             if not success:
-                print(f"[WARNING] IK failed for reset env_ids: {i}")
+                print(f"[WARNING] IK failed for env {env_id}")
                 continue
 
-            self.robot_sim_articulation.apply_action(actions)
-            self.robot.set_joint_position_target(actions[i, :5], joint_ids=self.dof_idx[:5], env_ids=[i])
-            self.robot.write_data_to_sim()
+            # q_sol is full arm vector; send first 5 joints to Lab (gripper handled separately)
+            self.robot.set_joint_position_target(
+                torch.tensor(q_sol[:5], device=self.device),
+                joint_ids=self.dof_idx[:5],
+                env_ids=[env_id],
+            )
+        self.robot.write_data_to_sim()
 
         self.last_actions[env_ids] = 0
         print("now the robot is reset")
